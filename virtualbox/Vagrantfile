@@ -1,0 +1,64 @@
+workers = {
+  "worker-bux" =>{
+    :ip => "192.168.56.11",
+    :cpus => 2,
+    :memory => "8192",
+    :name => "Worker Node Bux",
+    :disk => "40GB"
+  },
+  "worker-raga" =>{
+    :ip => "192.168.56.12",
+    :cpus => 2,
+    :memory => "8192",
+    :name => "Worker Node Raga",
+    :disk => "40GB"
+  }
+}
+
+Vagrant.configure("2") do |config|
+ 
+  config.vm.box = "hashicorp/bionic64"
+
+  config.vm.define "master" do |master|
+    master.vm.network "private_network", ip: "192.168.56.10"
+    master.vm.hostname = "master"
+    master.vm.provider "virtualbox" do |vb|
+      vb.gui = false
+      vb.cpus = 2
+      vb.memory = "2048"
+      vb.name = "Master Node"
+    end
+    master.vm.provision "shell", path: "../bin/install-container-engine.sh"
+    master.vm.provision "shell", path: "../bin/install-kubeadm.sh"
+    master.vm.provision "shell", path: "../bin/master-node-init.sh", args: ["-h","192.168.56.10"], env: {"HOME" => "/home/vagrant"}
+
+    master.vm.provision "shell", inline: <<-SHELL
+    echo "#!/bin/bash \nset +x \nsudo $(sudo kubeadm token create --print-join-command) --cri-socket=unix:///var/run/containerd/containerd.sock" > /vagrant/.vagrant/worker-node-join.sh
+    SHELL
+  end
+
+  workers.each_with_index do |(key, value),index|
+    config.vm.define key do |worker|
+      worker.vm.network "private_network", ip: value[:ip]
+      worker.vm.hostname = key
+      worker.vm.disk :disk, size: value[:disk], name: key
+      worker.vm.provider "virtualbox" do |vb|
+        vb.gui = false
+        vb.cpus = value[:cpus]
+        vb.memory = value[:memory]
+        vb.name = value[:name]
+      end
+      worker.vm.provision "shell", path: "../bin/install-container-engine.sh"
+      worker.vm.provision "shell", path: "../bin/install-kubeadm.sh"
+
+      worker.vm.provision "shell", inline: <<-SHELL
+        sudo mv /etc/containerd/config.toml /root/config.toml.bak
+        sudo systemctl restart containerd
+        # Join to cluster K8s
+        chmod +x /vagrant/.vagrant/worker-node-join.sh
+        sudo /vagrant/.vagrant/worker-node-join.sh
+      SHELL
+    end
+  end
+
+end
